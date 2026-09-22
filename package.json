@@ -1,0 +1,11 @@
+{
+  "name": "crude-desk",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Oil trading desk simulator: price clients, trade the news, manage risk.",
+  "scripts": {
+    "start": "python3 -m http.server 8000",
+    "test": "node --test test/*.test.js"
+  }
+}

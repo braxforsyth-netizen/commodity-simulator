@@ -1,0 +1,431 @@
+<meta charset="utf-8">
+<title>Crude Desk</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  /* Deliberately single-theme: a dark trading-terminal look in any host theme. */
+  :root {
+    color-scheme: dark;
+    --ground: #0d1316;
+    --panel: #141c20;
+    --panel-2: #1a242a;
+    --line: #26343c;
+    --text: #e3e6e1;
+    --muted: #8b9ba0;
+    --faint: #5b6b71;
+    --crude: #d99a2b;
+    --crude-dim: #6b4c17;
+    --bid: #45a8d8;
+    --offer: #e55e4e;
+    --good: #5cba84;
+    --warn: #e0b341;
+    --bad: #e55e4e;
+    --display: 'Barlow Condensed', 'Arial Narrow', 'Roboto Condensed', sans-serif;
+    --body: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    --mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--text);
+    font: 14px/1.45 var(--body);
+    -webkit-font-smoothing: antialiased;
+  }
+  button, input, select { font: inherit; color: inherit; }
+  button { cursor: pointer; }
+  :focus-visible { outline: 2px solid var(--crude); outline-offset: 2px; }
+  .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .label { font: 600 11px/1 var(--body); letter-spacing: .09em; text-transform: uppercase; color: var(--muted); }
+  .up { color: var(--good); } .down { color: var(--bad); }
+  .wrap { max-width: 1320px; margin: 0 auto; padding-inline: 16px; }
+
+  /* ---------- Buttons ---------- */
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    border: 1px solid var(--line); background: var(--panel-2);
+    padding: 9px 14px; border-radius: 4px; font-weight: 500;
+    transition: background .12s, border-color .12s, transform .06s;
+  }
+  .btn:hover { border-color: var(--faint); }
+  .btn:active { transform: translateY(1px); }
+  .btn.primary { background: var(--crude); border-color: var(--crude); color: #1b1203; font-weight: 600; }
+  .btn.primary:hover { background: #e7a93a; }
+  .btn.buy { background: color-mix(in srgb, var(--bid) 18%, var(--panel)); border-color: var(--bid); }
+  .btn.sell { background: color-mix(in srgb, var(--offer) 18%, var(--panel)); border-color: var(--offer); }
+  .btn.ghost { background: transparent; }
+  .btn:disabled { opacity: .4; cursor: not-allowed; }
+  kbd { font: 500 11px var(--mono); padding: 1px 5px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 3px; color: var(--muted); }
+  .btn kbd { border-color: currentColor; opacity: .55; color: inherit; }
+
+  /* ---------- Lobby ---------- */
+  #lobby { padding-block: 32px 48px; }
+  .masthead { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--line); padding-bottom: 20px; }
+  .brand { font: 700 clamp(44px, 8vw, 84px)/.86 var(--display); letter-spacing: -.01em; text-transform: uppercase; margin: 0; }
+  .brand span { color: var(--crude); }
+  .strap { color: var(--muted); max-width: 46ch; margin: 10px 0 0; }
+  .ticker { font-family: var(--mono); font-size: 13px; color: var(--muted); text-align: right; }
+  .ticker b { color: var(--crude); font-weight: 600; font-size: 22px; display: block; }
+
+  .lobby-grid { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); gap: 28px; margin-top: 28px; }
+  @media (max-width: 900px) { .lobby-grid { grid-template-columns: 1fr; } }
+
+  .scen-list { display: grid; gap: 10px; }
+  .scen {
+    display: grid; grid-template-columns: 64px 1fr auto; gap: 16px; align-items: start; text-align: left;
+    border: 1px solid var(--line); background: var(--panel); border-radius: 6px; padding: 16px;
+  }
+  .scen[aria-pressed="true"] { border-color: var(--crude); background: color-mix(in srgb, var(--crude) 7%, var(--panel)); }
+  .scen .lvl { font: 700 40px/1 var(--display); color: var(--crude-dim); }
+  .scen[aria-pressed="true"] .lvl { color: var(--crude); }
+  .scen h3 { font: 600 22px/1.1 var(--display); letter-spacing: .01em; margin: 0 0 4px; text-transform: uppercase; }
+  .scen p { margin: 0; color: var(--muted); font-size: 13.5px; max-width: 62ch; }
+  .scen .meta { font: 12px var(--mono); color: var(--faint); margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px 14px; }
+  .chip { font: 600 10.5px/1 var(--body); letter-spacing: .08em; text-transform: uppercase; padding: 5px 7px; border-radius: 3px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+
+  .setup { border: 1px solid var(--line); border-radius: 6px; background: var(--panel); padding: 18px; display: grid; gap: 16px; }
+  .field { display: grid; gap: 6px; }
+  .seg { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+  .seg button { background: transparent; border: 0; padding: 9px 10px; color: var(--muted); }
+  .seg button[aria-pressed="true"] { background: var(--panel-2); color: var(--text); box-shadow: inset 0 -2px 0 var(--crude); }
+  .seg-note { font-size: 12.5px; color: var(--muted); margin: 0; }
+  .seed-row { display: flex; gap: 8px; }
+  .seed-row input { flex: 1; min-width: 0; background: var(--ground); border: 1px solid var(--line); border-radius: 4px; padding: 8px 10px; font-family: var(--mono); }
+
+  .board h4, .howto h4 { font: 600 18px/1 var(--display); text-transform: uppercase; letter-spacing: .02em; margin: 0 0 10px; }
+  table { width: 100%; border-collapse: collapse; }
+  td, th { padding: 7px 6px; border-bottom: 1px solid var(--line); text-align: left; font-weight: 400; }
+  th { font: 600 10.5px var(--body); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+  td.r, th.r { text-align: right; }
+  tr.bot td { color: var(--muted); font-style: italic; }
+  tr.you td { color: var(--crude); }
+  .howto ol { margin: 0; padding-left: 20px; display: grid; gap: 8px; color: var(--muted); }
+  .howto ol b { color: var(--text); font-weight: 500; }
+  .keys { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 12px; font-size: 12.5px; color: var(--muted); }
+
+  /* ---------- Desk ---------- */
+  #desk { display: grid; grid-template-rows: auto 1fr; min-height: 100%; }
+  .bar {
+    position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5;
+    background: color-mix(in srgb, var(--ground) 92%, transparent); backdrop-filter: blur(6px);
+    border-bottom: 1px solid var(--line);
+  }
+  .bar-inner { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 24px; padding-block: 10px; }
+  .bar .title { font: 700 22px/1 var(--display); text-transform: uppercase; }
+  .bar .title small { font: 500 12px var(--mono); color: var(--muted); margin-left: 8px; text-transform: none; }
+  .kpis { display: flex; flex-wrap: wrap; gap: 8px 22px; margin-left: auto; align-items: center; }
+  .kpi { display: grid; gap: 3px; }
+  .kpi .v { font: 600 18px/1 var(--mono); font-variant-numeric: tabular-nums; }
+  .progress { height: 3px; background: var(--line); }
+  .progress i { display: block; height: 100%; width: 0; background: var(--crude); transition: width .3s linear; }
+
+  .desk-grid {
+    display: grid; gap: 12px; padding-block: 12px 24px;
+    grid-template-columns: minmax(0, 1.6fr) minmax(280px, 1fr) minmax(260px, .95fr);
+    grid-template-areas: "chart rfq news" "hedge rfq news" "blotter blotter news";
+  }
+  @media (max-width: 1100px) {
+    .desk-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-areas: "chart chart" "rfq hedge" "news blotter"; }
+  }
+  @media (max-width: 700px) {
+    .desk-grid { grid-template-columns: minmax(0, 1fr); grid-template-areas: "rfq" "hedge" "chart" "news" "blotter"; }
+  }
+  .pane { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 14px; min-width: 0; }
+  .pane > header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+  .pane > header h2 { font: 600 17px/1 var(--display); letter-spacing: .03em; text-transform: uppercase; margin: 0; }
+
+  .chart-pane { grid-area: chart; }
+  .quote-strip { display: grid; grid-template-columns: repeat(3, auto); justify-content: start; gap: 4px 22px; margin-bottom: 8px; }
+  .quote-strip .v { font: 600 26px/1 var(--mono); font-variant-numeric: tabular-nums; }
+  .quote-strip .bidv { color: var(--bid); } .quote-strip .askv { color: var(--offer); }
+  canvas { display: block; width: 100%; max-width: 100%; }
+  #chart { height: 250px; }
+
+  .hedge-pane { grid-area: hedge; display: grid; gap: 12px; }
+  .gauge { position: relative; height: 26px; border-radius: 3px; background: var(--ground); border: 1px solid var(--line); overflow: hidden; }
+  .gauge .zone { position: absolute; top: 0; bottom: 0; background: color-mix(in srgb, var(--bad) 20%, transparent); }
+  .gauge .zero { position: absolute; top: 0; bottom: 0; left: 50%; width: 1px; background: var(--faint); }
+  .gauge .fill { position: absolute; top: 4px; bottom: 4px; transition: left .15s, width .15s; }
+  .gauge-scale { display: flex; justify-content: space-between; font: 11px var(--mono); color: var(--faint); margin-top: 4px; }
+  .sizes { display: flex; gap: 6px; flex-wrap: wrap; }
+  .sizes button { flex: 1; min-width: 48px; background: var(--ground); border: 1px solid var(--line); border-radius: 4px; padding: 7px 4px; font: 500 13px var(--mono); }
+  .sizes button[aria-pressed="true"] { border-color: var(--crude); color: var(--crude); }
+  .trade-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .trade-row .btn { flex-direction: column; gap: 2px; padding: 10px; }
+  .trade-row .btn .px { font: 600 18px var(--mono); }
+
+  .rfq-pane { grid-area: rfq; display: flex; flex-direction: column; }
+  .rfq-queue { display: grid; gap: 6px; margin-bottom: 12px; }
+  .rfq-item { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; text-align: left; border: 1px solid var(--line); background: var(--ground); border-radius: 4px; padding: 8px 10px; }
+  .rfq-item[aria-pressed="true"] { border-color: var(--crude); }
+  .rfq-item .who { font-weight: 500; }
+  .rfq-item .timer { grid-column: 1 / -1; height: 2px; background: var(--line); margin-top: 4px; }
+  .rfq-item .timer i { display: block; height: 100%; background: var(--crude); }
+  .rfq-item.urgent .timer i { background: var(--bad); }
+  .empty { color: var(--faint); font-size: 13px; padding: 18px 4px; text-align: center; border: 1px dashed var(--line); border-radius: 4px; }
+  .ticket { border-top: 1px solid var(--line); padding-top: 12px; display: grid; gap: 12px; }
+  .ticket .ask { font-size: 13.5px; color: var(--muted); }
+  .ticket .ask b { color: var(--text); font-weight: 500; }
+  .twoway { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .twoway div { background: var(--ground); border: 1px solid var(--line); border-radius: 4px; padding: 10px; text-align: center; }
+  .twoway .px { font: 600 24px/1.1 var(--mono); font-variant-numeric: tabular-nums; }
+  .twoway .b .px { color: var(--bid); } .twoway .o .px { color: var(--offer); }
+  .stepper { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 8px; }
+  .stepper button { width: 34px; height: 30px; border: 1px solid var(--line); background: var(--ground); border-radius: 4px; }
+  .stepper .val { text-align: center; font: 500 14px var(--mono); }
+  .ticket-actions { display: grid; grid-template-columns: 2fr 1fr; gap: 8px; }
+  .hint { font-size: 12.5px; border-left: 2px solid var(--crude); padding: 6px 10px; background: color-mix(in srgb, var(--crude) 7%, transparent); color: var(--text); }
+
+  .news-pane { grid-area: news; display: flex; flex-direction: column; max-height: 780px; }
+  .feed { overflow-y: auto; display: grid; gap: 0; align-content: start; margin-inline: -14px; padding-inline: 14px; }
+  .headline { padding: 10px 0; border-bottom: 1px solid var(--line); display: grid; gap: 5px; }
+  .headline .top { display: flex; gap: 8px; align-items: center; }
+  .headline time { font: 12px var(--mono); color: var(--faint); }
+  .headline p { margin: 0; font-size: 13.5px; }
+  .headline.fresh { animation: flash 1.6s ease-out; }
+  @keyframes flash { from { background: color-mix(in srgb, var(--crude) 22%, transparent); } to { background: transparent; } }
+  .tag-RUMOUR { color: var(--warn); border-color: var(--warn); }
+  .tag-BREAKING, .tag-DENIAL { color: var(--bad); border-color: var(--bad); }
+  .tag-DATA, .tag-CALENDAR { color: var(--bid); border-color: var(--bid); }
+  .tag-WEATHER, .tag-MACRO, .tag-CONFIRMED { color: var(--text); border-color: var(--faint); }
+
+  .blotter-pane { grid-area: blotter; }
+  .blotter { max-height: 200px; overflow: auto; }
+  .blotter td { font-size: 13px; padding: 5px 6px; }
+
+  .toasts { position: fixed; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom, 0px)); display: grid; gap: 8px; z-index: 20; max-width: min(360px, calc(100vw - 32px)); }
+  .toast { background: var(--panel-2); border: 1px solid var(--line); border-left: 3px solid var(--crude); padding: 10px 12px; border-radius: 4px; font-size: 13px; box-shadow: 0 8px 24px rgb(0 0 0 / .35); animation: tin .2s ease-out; }
+  .toast.good { border-left-color: var(--good); } .toast.bad { border-left-color: var(--bad); }
+  @keyframes tin { from { transform: translateY(8px); opacity: 0; } }
+
+  .overlay { position: fixed; inset: 0; display: grid; place-items: center; background: rgb(5 9 11 / .72); z-index: 15; padding: 16px; }
+  .overlay .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 24px; max-width: 480px; display: grid; gap: 14px; }
+  .overlay h2 { font: 700 34px/1 var(--display); text-transform: uppercase; margin: 0; }
+  .overlay p { margin: 0; color: var(--muted); }
+
+  /* ---------- Debrief ---------- */
+  #debrief { padding-block: 28px 48px; }
+  .verdict { display: grid; grid-template-columns: auto 1fr auto; gap: 24px; align-items: center; border-bottom: 1px solid var(--line); padding-bottom: 22px; }
+  @media (max-width: 700px) { .verdict { grid-template-columns: auto 1fr; } .verdict .actions { grid-column: 1 / -1; } }
+  .grade { font: 700 120px/.8 var(--display); color: var(--crude); }
+  .verdict h2 { font: 600 30px/1.05 var(--display); text-transform: uppercase; margin: 0 0 6px; }
+  .verdict .score { font: 600 40px/1 var(--mono); }
+  .verdict .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .deb-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; margin-top: 20px; }
+  @media (max-width: 900px) { .deb-grid { grid-template-columns: 1fr; } }
+  .deb-grid .wide { grid-column: 1 / -1; }
+  .bench-row { display: grid; grid-template-columns: 130px 1fr 110px; gap: 10px; align-items: center; padding: 6px 0; }
+  .bench-row .track { height: 12px; background: var(--ground); border-radius: 2px; position: relative; overflow: hidden; }
+  .bench-row .track i { position: absolute; top: 0; bottom: 0; }
+  .bench-row.you .name { color: var(--crude); font-weight: 600; }
+  .attr { display: grid; gap: 8px; }
+  .attr-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+  .attr-row small { display: block; color: var(--muted); font-size: 12.5px; }
+  .attr-row .num { font-size: 16px; align-self: center; }
+  .coach { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+  .coach li { padding: 10px 12px; border-left: 3px solid var(--faint); background: var(--ground); border-radius: 0 4px 4px 0; font-size: 13.5px; }
+  .coach li.good { border-color: var(--good); } .coach li.warn { border-color: var(--warn); } .coach li.bad { border-color: var(--bad); }
+  #debChart { height: 260px; }
+  .save-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .save-row input { width: 110px; background: var(--ground); border: 1px solid var(--line); border-radius: 4px; padding: 8px 10px; font-family: var(--mono); text-transform: uppercase; }
+  .table-scroll { overflow-x: auto; }
+
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+</style>
+
+<!-- ============ LOBBY ============ -->
+<main id="lobby" class="wrap">
+  <header class="masthead">
+    <div>
+      <h1 class="brand">Crude<span>/</span>Desk</h1>
+      <p class="strap">An oil trading desk simulator. Price your clients, trade the headlines, stay inside your limits, and beat the benchmark traders on the same tape.</p>
+    </div>
+    <div class="ticker">ICE Brent · front month<b id="lobbyPx" class="num">82.40</b><span id="lobbyDate"></span></div>
+  </header>
+
+  <div class="lobby-grid">
+    <section>
+      <div class="label" style="margin-bottom:10px">Choose a scenario</div>
+      <div class="scen-list" id="scenList"></div>
+    </section>
+
+    <aside style="display:grid;gap:20px;align-content:start">
+      <div class="setup">
+        <div class="field">
+          <span class="label">Mode</span>
+          <div class="seg" role="group" aria-label="Mode">
+            <button id="modePractice" aria-pressed="true">Practice</button>
+            <button id="modeRanked" aria-pressed="false">Ranked</button>
+          </div>
+          <p class="seg-note" id="modeNote"></p>
+        </div>
+        <div class="field">
+          <label class="label" for="seedInput">Market seed</label>
+          <div class="seed-row">
+            <input id="seedInput" autocomplete="off" spellcheck="false">
+            <button class="btn ghost" id="seedDaily" title="Today's seed: everyone gets the same market">Daily</button>
+            <button class="btn ghost" id="seedRandom">Random</button>
+          </div>
+          <p class="seg-note">Same scenario + seed = same prices, news and clients. Replay a seed to measure real improvement.</p>
+        </div>
+        <div class="field">
+          <span class="label">Clock speed</span>
+          <div class="seg" role="group" aria-label="Clock speed">
+            <button id="speed1" aria-pressed="true">1 tick / sec</button>
+            <button id="speed2" aria-pressed="false">Fast (0.6 sec)</button>
+          </div>
+        </div>
+        <button class="btn primary" id="startBtn" style="padding:13px">Open the desk <kbd>Enter</kbd></button>
+      </div>
+
+      <div class="board">
+        <h4>Leaderboard · <span id="boardScen"></span></h4>
+        <div class="table-scroll"><table id="boardTable"></table></div>
+      </div>
+    </aside>
+  </div>
+
+  <section class="howto" style="margin-top:32px;border-top:1px solid var(--line);padding-top:22px">
+    <h4>How the desk works</h4>
+    <ol>
+      <li><b>Clients ask for a two-way price</b> in Brent futures. You don't know if they're buying or selling. Set your width and skew, then send. Tight quotes win more trades. Wide quotes earn more per trade.</li>
+      <li><b>Know who you're pricing.</b> Corporates hedge real exposure and don't know where price is going. Hedge funds often do, and if they trade on a tight price you usually lose. The trading house is somewhere in between.</li>
+      <li><b>Every fill leaves you with risk.</b> Hedge on screen (you pay the market spread), or skew your next quotes so clients take the position off you for free.</li>
+      <li><b>Headlines move the fair value.</b> The traded price catches up over a few ticks. Read, decide bullish or bearish, act. Rumours move it less, and some get denied.</li>
+      <li><b>Limits are real.</b> Every tick over your position limit is fined. At 1.5× the risk manager cuts you at a bad price. Losing past the desk's stop-loss ends your day.</li>
+    </ol>
+    <div class="keys">
+      <span><kbd>Enter</kbd> send quote</span><span><kbd>Esc</kbd> pass</span><span><kbd>↑</kbd><kbd>↓</kbd> width</span><span><kbd>←</kbd><kbd>→</kbd> skew</span>
+      <span><kbd>B</kbd> buy</span><span><kbd>S</kbd> sell</span><span><kbd>1</kbd>–<kbd>4</kbd> hedge size</span><span><kbd>F</kbd> flatten</span><span><kbd>Tab</kbd> next client</span><span><kbd>Space</kbd> pause (practice)</span>
+    </div>
+  </section>
+</main>
+
+<!-- ============ DESK ============ -->
+<div id="desk" hidden>
+  <div class="bar">
+    <div class="wrap bar-inner">
+      <div class="title" id="deskTitle">Desk</div>
+      <div class="kpis">
+        <div class="kpi"><span class="label">Clock</span><span class="v" id="kClock">08:00</span></div>
+        <div class="kpi"><span class="label">Position</span><span class="v" id="kPos">0</span></div>
+        <div class="kpi"><span class="label">P&amp;L</span><span class="v" id="kPnl">$0</span></div>
+        <div class="kpi"><span class="label">Penalties</span><span class="v" id="kPen">$0</span></div>
+        <div class="kpi"><span class="label">Score</span><span class="v" id="kScore">$0</span></div>
+        <button class="btn ghost" id="pauseBtn">Pause</button>
+        <button class="btn ghost" id="quitBtn">End day</button>
+      </div>
+    </div>
+    <div class="progress"><i id="prog"></i></div>
+  </div>
+
+  <div class="wrap desk-grid">
+    <section class="pane chart-pane">
+      <header><h2>ICE Brent · M1</h2><span class="label" id="spreadLbl">spread</span></header>
+      <div class="quote-strip">
+        <div><div class="label">Bid</div><div class="v bidv" id="pxBid">—</div></div>
+        <div><div class="label">Mid</div><div class="v" id="pxMid">—</div></div>
+        <div><div class="label">Ask</div><div class="v askv" id="pxAsk">—</div></div>
+      </div>
+      <canvas id="chart" aria-label="Brent price chart with your trades"></canvas>
+    </section>
+
+    <section class="pane hedge-pane">
+      <header><h2>Risk &amp; hedge</h2><span class="label" id="limitLbl">limit</span></header>
+      <div>
+        <div class="gauge" id="gauge"><div class="zone" style="left:0;width:16.67%"></div><div class="zone" style="right:0;width:16.67%"></div><div class="zero"></div><div class="fill" id="gaugeFill"></div></div>
+        <div class="gauge-scale"><span id="gMin">-1.5×</span><span id="gL">short limit</span><span>0</span><span id="gR">long limit</span><span id="gMax">+1.5×</span></div>
+      </div>
+      <div class="sizes" id="sizes"></div>
+      <div class="trade-row">
+        <button class="btn sell" id="sellBtn"><span class="label">Sell at bid <kbd>S</kbd></span><span class="px" id="sellPx">—</span></button>
+        <button class="btn buy" id="buyBtn"><span class="label">Buy at ask <kbd>B</kbd></span><span class="px" id="buyPx">—</span></button>
+      </div>
+      <button class="btn ghost" id="flatBtn">Flatten position <kbd>F</kbd></button>
+    </section>
+
+    <section class="pane rfq-pane">
+      <header><h2>Client requests</h2><span class="label" id="rfqCount">0 open</span></header>
+      <div class="rfq-queue" id="rfqQueue"></div>
+      <div class="ticket" id="ticket" hidden>
+        <div class="ask" id="ticketAsk"></div>
+        <div class="twoway">
+          <div class="b"><div class="label">You buy (bid)</div><div class="px" id="tBid">—</div></div>
+          <div class="o"><div class="label">You sell (offer)</div><div class="px" id="tOffer">—</div></div>
+        </div>
+        <div class="stepper"><button id="wDown" aria-label="Tighten">−</button><div class="val">Width <span id="tWidth">10</span>¢ <kbd>↑↓</kbd></div><button id="wUp" aria-label="Widen">+</button></div>
+        <div class="stepper"><button id="sDown" aria-label="Skew lower">−</button><div class="val">Skew <span id="tSkew">0</span>¢ <kbd>←→</kbd></div><button id="sUp" aria-label="Skew higher">+</button></div>
+        <div class="hint" id="tHint" hidden></div>
+        <div class="ticket-actions">
+          <button class="btn primary" id="sendBtn">Send price <kbd>Enter</kbd></button>
+          <button class="btn ghost" id="passBtn">Pass <kbd>Esc</kbd></button>
+        </div>
+      </div>
+    </section>
+
+    <section class="pane news-pane">
+      <header><h2>Newswire</h2><span class="label" id="newsCount"></span></header>
+      <div class="feed" id="feed"></div>
+    </section>
+
+    <section class="pane blotter-pane">
+      <header><h2>Blotter</h2><span class="label" id="edgeLbl"></span></header>
+      <div class="blotter"><table id="blotter"><thead><tr><th>Time</th><th>Type</th><th>Counterparty</th><th class="r">Lots</th><th class="r">Price</th><th class="r">Edge</th></tr></thead><tbody></tbody></table></div>
+    </section>
+  </div>
+</div>
+
+<!-- ============ DEBRIEF ============ -->
+<main id="debrief" class="wrap" hidden>
+  <section class="verdict">
+    <div class="grade" id="dGrade">B</div>
+    <div>
+      <div class="label" id="dScen"></div>
+      <h2 id="dLabel"></h2>
+      <div class="score" id="dScore"></div>
+    </div>
+    <div class="actions">
+      <button class="btn primary" id="retryBtn">Replay this seed</button>
+      <button class="btn" id="newSeedBtn">New seed</button>
+      <button class="btn ghost" id="lobbyBtn">Lobby</button>
+    </div>
+  </section>
+
+  <div class="deb-grid">
+    <section class="pane">
+      <header><h2>You vs the desk</h2><span class="label">same tape, same clients</span></header>
+      <div id="dBench"></div>
+      <div class="save-row" id="saveRow" style="margin-top:14px">
+        <label class="label" for="initials">Initials</label>
+        <input id="initials" maxlength="3" autocomplete="off">
+        <button class="btn" id="saveBtn">Save to leaderboard</button>
+      </div>
+    </section>
+    <section class="pane">
+      <header><h2>Where the money came from</h2></header>
+      <div class="attr" id="dAttr"></div>
+    </section>
+    <section class="pane wide">
+      <header><h2>Your day</h2><span class="label">price · your position shaded · ▲ you bought · ▼ you sold</span></header>
+      <canvas id="debChart"></canvas>
+    </section>
+    <section class="pane">
+      <header><h2>Coach's notes</h2></header>
+      <ul class="coach" id="dCoach"></ul>
+    </section>
+    <section class="pane">
+      <header><h2>Client flow</h2></header>
+      <div class="table-scroll"><table id="dFlow"></table></div>
+      <p class="seg-note" style="margin-top:10px">Markout is what your fills were worth 10 ticks later. Negative markout means the client knew more than you.</p>
+    </section>
+  </div>
+</main>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<div class="overlay" id="overlay" hidden><div class="card" id="overlayCard"></div></div>
+
+<script type="module" src="src/app.js"></script>
