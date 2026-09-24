@@ -2,8 +2,11 @@ import {
   SCENARIOS, LOT, REQUEST_LIFE, PENALTY,
   buildWorld, createGame, benchmarks, analyse, grade, money, clock, round2, scenarioById,
 } from './engine.js';
+import { VESSELS, ORIGINS, DESTS, PHYS } from './physical.js';
 
 const $ = (id) => document.getElementById(id);
+const clk = (t) => clock(t, ui.game.world.N, ui.game.world.scenario);
+const CHART_KINDS = new Set(['client', 'hedge', 'physical']);
 const SIZES = [10, 25, 50, 100];
 const BOARD_KEY = 'crudedesk.board.v1';
 const PREFS_KEY = 'crudedesk.prefs.v1';
@@ -23,6 +26,10 @@ const ui = {
   skew: 0, // cents
   size: 1, // index into SIZES
   saved: false,
+  offerSel: null, // physical desk: selected cargo offer
+  destSel: null,
+  vesselSel: null,
+  hedgeCargo: true,
 };
 
 // ---------- storage (best effort) ----------
@@ -46,7 +53,7 @@ function renderLobby() {
       <span>
         <h3>${sc.name}</h3>
         <p>${sc.brief}</p>
-        <span class="meta"><span>limit ±${sc.limit} lots</span><span>stop-loss ${money(sc.maxLoss)}</span><span>${sc.ticks} ticks</span><span>hedge funds ${Math.round(sc.mix.fund * 100)}% of flow</span></span>
+        <span class="meta"><span>limit ±${sc.limit} lots</span><span>stop-loss ${money(sc.maxLoss)}</span><span>${sc.ticks} ticks</span><span>${sc.physical ? `cargoes from ${sc.physical.origins.map((o) => ORIGINS[o].grade).join(', ')}` : `hedge funds ${Math.round(sc.mix.fund * 100)}% of flow`}</span></span>
       </span>
       <span class="chip">${sc.tag}</span>
     </button>`).join('');
@@ -91,6 +98,7 @@ function startGame() {
   ui.selected = null;
   ui.skew = 0;
   ui.saved = false;
+  ui.offerSel = ui.destSel = ui.vesselSel = null;
   ui.paused = true;
   ui.started = false;
   newsIds.clear();
@@ -103,6 +111,9 @@ function startGame() {
   $('deskTitle').innerHTML = `${sc.name}<small>${ui.mode === 'ranked' ? 'RANKED' : 'PRACTICE'} · seed ${esc(ui.seed)}</small>`;
   $('pauseBtn').hidden = ui.mode === 'ranked';
   $('limitLbl').textContent = `limit ±${sc.limit} lots`;
+  const phys = !!world.physical;
+  $('cargoPane').hidden = $('freightPane').hidden = $('kCargoWrap').hidden = !phys;
+  document.querySelector('.desk-grid').classList.toggle('physical', phys);
   $('gL').textContent = `−${sc.limit}`;
   $('gR').textContent = `+${sc.limit}`;
   $('gMin').textContent = `−${Math.round(sc.limit * 1.5)}`;
@@ -110,10 +121,11 @@ function startGame() {
   renderSizes();
   renderAll();
   overlay(`
-    <div class="label">Morning briefing · ${clock(0, world.N)}</div>
+    <div class="label">Morning briefing · ${clk(0)}</div>
     <h2>${sc.name}</h2>
     <p>${sc.brief}</p>
     <p>Position limit <b class="num">±${sc.limit} lots</b> (1 lot = 1,000 bbl, so $0.01 on 100 lots = $1,000). Stop-loss <b class="num">${money(sc.maxLoss)}</b>. Missed client: <b class="num">−${money(PENALTY.missed)}</b>. Pass: <b class="num">−${money(PENALTY.passed)}</b>.</p>
+    ${world.physical ? `<p>Physical desk open: 1 tick = 6 hours. Cargoes count toward your limit, so an unhedged 600k bbl cargo is 600 lots of risk. Demurrage starts ${PHYS.freeDays} days after arrival, and after ${PHYS.maxWaitDays} days the cargo is sold for you at a ${Math.round(PHYS.distressDiscount * 100)}¢ discount.</p>` : ''}
     <button class="btn primary" id="goBtn">Start trading <kbd>Enter</kbd></button>`);
   $('goBtn').addEventListener('click', resume);
 }
@@ -131,7 +143,7 @@ function pause() {
   if (ui.mode === 'ranked' || !ui.started || ui.game.state.done) return;
   ui.paused = true;
   clearInterval(ui.timer);
-  overlay(`<div class="label">Paused · ${clock(ui.game.state.t, ui.game.world.N)}</div><h2>Desk on hold</h2><p>The market waits for you in practice mode. In ranked mode it doesn't.</p><button class="btn primary" id="goBtn">Resume <kbd>Enter</kbd></button>`);
+  overlay(`<div class="label">Paused · ${clk(ui.game.state.t)}</div><h2>Desk on hold</h2><p>The market waits for you in practice mode. In ranked mode it doesn't.</p><button class="btn primary" id="goBtn">Resume <kbd>Enter</kbd></button>`);
   $('goBtn').addEventListener('click', resume);
 }
 
@@ -161,6 +173,13 @@ function handleEvent(e) {
     toast(`${esc(e.req.client)} gave up waiting. −${money(PENALTY.missed)}`, 'bad');
   } else if (e.type === 'breach') {
     if (g.state.breachTicks === 1 || g.state.breachTicks % 5 === 0) toast(`Over your limit. −${money(PENALTY.breachPerTick)} every tick until you hedge.`, 'bad');
+  } else if (e.type === 'offer') {
+    const o = e.offer;
+    toast(`<b>Cargo offer:</b> ${o.grade} ${(o.bbl / 1e6).toFixed(1)}M bbl FOB ${ORIGINS[o.origin].name}${o.distressed ? ' (motivated seller)' : ''}`);
+  } else if (e.type === 'arrived') {
+    toast(`<b>${e.cargo.grade}</b> has arrived at ${DESTS[e.cargo.dest].name}. Sell before demurrage starts.`, 'good');
+  } else if (e.type === 'distressed') {
+    toast(`${e.cargo.grade} waited too long at ${DESTS[e.cargo.dest].name} and was sold at a distressed price.`, 'bad');
   } else if (e.type === 'forced') {
     toast(`<b>Risk manager</b> cut ${Math.abs(e.lots)} lots at a penalty price. −${money(PENALTY.forced)}`, 'bad');
   }
@@ -171,7 +190,7 @@ function endGame() {
   ui.paused = true;
   const g = ui.game;
   if (g.state.stoppedOut) {
-    overlay(`<div class="label">${clock(g.state.t, g.world.N)}</div><h2>Stopped out</h2><p>The desk hit its ${money(g.world.scenario.maxLoss)} loss limit and risk closed you down for the day.</p><button class="btn primary" id="goBtn">See the debrief <kbd>Enter</kbd></button>`);
+    overlay(`<div class="label">${clk(g.state.t)}</div><h2>Stopped out</h2><p>The desk hit its ${money(g.world.scenario.maxLoss)} loss limit and risk closed you down for the day.</p><button class="btn primary" id="goBtn">See the debrief <kbd>Enter</kbd></button>`);
     $('goBtn').addEventListener('click', () => { hideOverlay(); showDebrief(); });
   } else {
     showDebrief();
@@ -234,7 +253,7 @@ function renderAll() {
   const s = g.state;
   const sc = g.world.scenario;
   const N = g.world.N;
-  $('kClock').textContent = clock(s.t, N);
+  $('kClock').textContent = clk(s.t);
   const lots = Math.round(s.pos / LOT);
   $('kPos').textContent = `${lots > 0 ? '+' : ''}${lots} lots`;
   $('kPos').className = `v ${Math.abs(s.pos) > g.limitBbl ? 'down' : ''}`;
@@ -262,6 +281,10 @@ function renderAll() {
   fill.style.background = Math.abs(lots) > sc.limit ? 'var(--bad)' : Math.abs(lots) > sc.limit * 0.7 ? 'var(--warn)' : lots >= 0 ? 'var(--bid)' : 'var(--offer)';
 
   renderRFQ();
+  if (g.physical) {
+    $('kCargo').textContent = `${Math.round(s.phys / LOT)} lots`;
+    renderPhysical();
+  }
   renderBlotter();
   drawLiveChart();
 }
@@ -330,7 +353,7 @@ function addHeadline(h, fresh) {
   newsIds.add(h.id);
   const el = document.createElement('article');
   el.className = `headline${fresh ? ' fresh' : ''}`;
-  el.innerHTML = `<div class="top"><time>${clock(h.tick, ui.game.world.N)}</time><span class="chip tag-${h.tag}">${h.tag}</span></div><p>${esc(h.text)}</p>`;
+  el.innerHTML = `<div class="top"><time>${clk(h.tick)}</time><span class="chip tag-${h.tag}">${h.tag}</span></div><p>${esc(h.text)}</p>`;
   $('feed').prepend(el);
   $('newsCount').textContent = `${newsIds.size} items`;
 }
@@ -343,13 +366,212 @@ function renderBlotter() {
   for (; tradeCount < trades.length; tradeCount++) {
     const tr = trades[tradeCount];
     const row = document.createElement('tr');
-    const lots = tr.qty / LOT;
-    const type = tr.kind === 'client' ? 'Client' : tr.forced ? 'Risk cut' : 'Hedge';
-    row.innerHTML = `<td class="num">${clock(tr.t, g.world.N)}</td><td>${type}</td><td>${esc(tr.client || 'ICE screen')}</td>
-      <td class="r num ${lots > 0 ? 'up' : 'down'}">${lots > 0 ? '+' : ''}${lots}</td><td class="r num">${tr.price.toFixed(2)}</td><td class="r num ${tr.edge >= 0 ? 'up' : 'down'}">${money(tr.edge)}</td>`;
+    const lots = tr.kind === 'ffa' ? tr.lots : tr.qty / LOT;
+    const type = { client: 'Client', physical: 'Cargo', freight: 'Charter', ffa: 'FFA' }[tr.kind] || (tr.forced ? 'Risk cut' : tr.cargo ? 'Cargo hedge' : 'Hedge');
+    const who = tr.client || tr.label || 'ICE screen';
+    const px = tr.kind === 'freight' || tr.kind === 'ffa' ? `$${Math.round(tr.price).toLocaleString('en-US')}/d` : tr.price.toFixed(2);
+    const lotCell = tr.kind === 'freight' ? '—' : `${lots > 0 ? '+' : ''}${lots}`;
+    row.innerHTML = `<td class="num">${clk(tr.t)}</td><td>${type}</td><td>${esc(who)}</td>
+      <td class="r num ${lots > 0 ? 'up' : 'down'}">${lotCell}</td><td class="r num">${px}</td><td class="r num ${tr.edge >= 0 ? 'up' : 'down'}">${money(tr.edge)}</td>`;
     tbody.prepend(row);
   }
-  $('edgeLbl').textContent = `client spread ${money(g.state.clientEdge)} · hedging ${money(g.state.hedgeEdge)}`;
+  $('edgeLbl').textContent = `client spread ${money(g.state.clientEdge)} · hedging ${money(g.state.hedgeEdge)}${g.physical ? ` · freight ${money(g.state.freightCost)}` : ''}`;
+}
+
+// ---------- Physical desk ----------
+const fmtDiff = (x) => `${x >= 0 ? '+' : '−'}${Math.abs(x).toFixed(2)}`;
+const mbbl = (b) => `${(b / 1e6).toFixed(1)}M bbl`;
+const CLASS_COLOR = { aframax: '--bid', suezmax: '--good', vlcc: '--crude' };
+
+function selectOffer(id) {
+  const g = ui.game;
+  const offer = g.world.physical.offers[id];
+  ui.offerSel = id;
+  ui.vesselSel = offer.cls;
+  const qs = g.world.physical.dests.map((d) => g.physical.quoteVoyage(offer, d, offer.cls)).filter((q) => !q.late);
+  qs.sort((a, b) => b.margin - a.margin);
+  ui.destSel = qs.length ? qs[0].dest : g.world.physical.dests[0];
+}
+
+function renderPhysical() {
+  const g = ui.game;
+  const ph = g.physical;
+  const P = g.world.physical;
+  const s = g.state;
+  const offers = ph.openOffers();
+  if (ui.offerSel != null && !offers.some((o) => o.id === ui.offerSel)) ui.offerSel = null;
+  if (ui.offerSel == null && offers.length) selectOffer(offers[0].id);
+  const afloat = s.cargoes.filter((c) => c.status !== 'sold').length;
+  $('cargoLbl').textContent = `${offers.length} offer${offers.length === 1 ? '' : 's'} · ${afloat} cargo${afloat === 1 ? '' : 'es'} unsold`;
+
+  $('offerList').innerHTML = offers.length
+    ? offers.map((o) => {
+      const left = o.tick + PHYS.offerLife - s.t;
+      return `<button class="offer" data-act="offer" data-id="${o.id}" aria-pressed="${o.id === ui.offerSel}">
+        <span><b>${o.grade}</b> · ${mbbl(o.bbl)}</span><span class="num">FOB ${fmtDiff(ph.offerAsk(o))}</span>
+        <span class="sub">${ORIGINS[o.origin].name} · ${esc(o.seller)}${o.distressed ? ' · <span style="color:var(--good)">motivated seller</span>' : ''}</span><span class="sub num">${left}t</span>
+        <span class="timer"><i style="width:${(left / PHYS.offerLife) * 100}%"></i></span></button>`;
+    }).join('')
+    : '<div class="empty">No cargoes offered right now. Sellers show up every day or so.</div>';
+
+  renderPlanner(offers.find((o) => o.id === ui.offerSel));
+
+  // arb board: each origin's cheapest ship per route
+  const head = `<thead><tr><th>FOB</th>${P.dests.map((d) => `<th class="r">${DESTS[d].name}</th>`).join('')}</tr></thead>`;
+  const body = P.origins.map((o) => {
+    const cells = P.dests.map((d) => {
+      let best = null;
+      for (const c of ORIGINS[o].classes) {
+        const q = ph.quoteVoyage({ origin: o, bbl: VESSELS[c].bbl, prem: 0 }, d, c);
+        if (!best || q.margin > best.margin) best = q;
+      }
+      const cls = best.margin > 0.1 ? 'open' : best.margin < 0 ? 'shut' : '';
+      return `<td class="cell ${cls}" title="DES ${fmtDiff(best.desBid)} − FOB ${fmtDiff(best.fobAsk)} − freight ${best.freightBbl.toFixed(2)}">${fmtDiff(best.margin)}<small>${VESSELS[best.cls].name} · ${best.days}d</small></td>`;
+    }).join('');
+    return `<tr><td>${ORIGINS[o].grade}<small style="display:block;color:var(--faint);font-size:10.5px">${ORIGINS[o].name} ${fmtDiff(ph.fob(o))}</small></td>${cells}</tr>`;
+  }).join('');
+  $('arbBoard').innerHTML = head + `<tbody>${body}</tbody>`;
+
+  // voyages: unsold first, then the three most recent sales
+  const open = s.cargoes.filter((c) => c.status !== 'sold');
+  const sold = s.cargoes.filter((c) => c.status === 'sold').slice(-3).reverse();
+  $('voyages').innerHTML = [...open, ...sold].map((c) => {
+    const route = `${c.grade} → ${DESTS[c.dest].name}`;
+    const meta = `${VESSELS[c.cls].name} · ${mbbl(c.bbl)}`;
+    const hedgeChip = c.status === 'sold' ? '' : c.hedgeLots ? '<span class="chip ok">hedged</span>' : '<span class="chip no">unhedged</span>';
+    if (c.status === 'sold') {
+      return `<div class="voyage sold"><div class="row"><span class="route">${route}</span><span class="num ${c.pnl >= 0 ? 'up' : 'down'}">${money(c.pnl)}</span></div><div class="row sub" style="font-size:12.5px;color:var(--muted)"><span>${meta}</span><span>${c.how === 'distressed' ? 'distressed sale' : c.how === 'sold' ? `sold DES ${fmtDiff(c.desDiff)}` : 'sold at close'}</span></div></div>`;
+    }
+    const pct = c.status === 'sailing' ? ((s.t - c.buyTick) / (c.arriveTick - c.buyTick)) * 100 : 100;
+    const bid = ph.des(c.origin, c.dest) - PHYS.saleDiscount;
+    const est = (bid - c.fobDiff) * c.bbl - c.freight - c.demurrage;
+    let status;
+    let action = '';
+    if (c.status === 'sailing') {
+      status = `ETA ${clk(c.arriveTick)} · marks ${money(est)}`;
+    } else {
+      const free = PHYS.freeDays * P.tpd - (s.t - c.arriveTick);
+      status = free > 0 ? `Arrived · demurrage in ${free}t` : `<span class="down">Demurrage ${money(c.demurrage)} and counting</span>`;
+      action = `<button class="btn primary small" data-act="sell" data-id="${c.id}">Sell DES ${fmtDiff(bid)} · ${money(est)}</button>`;
+    }
+    return `<div class="voyage ${c.status}"><div class="row"><span class="route">${route}</span>${hedgeChip}</div>
+      <div class="bar2"><i style="width:${Math.min(100, pct)}%"></i></div>
+      <div class="row" style="font-size:12.5px;color:var(--muted)"><span>${meta}</span><span class="num">${status}</span></div>${action}</div>`;
+  }).join('') || '<div class="empty">No cargoes yet. Pick an offer and plan a voyage.</div>';
+
+  renderFreight();
+}
+
+function renderPlanner(offer) {
+  const el = $('planner');
+  el.hidden = !offer;
+  if (!offer) return;
+  const g = ui.game;
+  const ph = g.physical;
+  const P = g.world.physical;
+  const ships = Object.keys(VESSELS).filter((c) => P.classes.includes(c) && VESSELS[c].bbl >= offer.bbl);
+  if (!ships.includes(ui.vesselSel)) ui.vesselSel = ships[0];
+  const qs = P.dests.map((d) => ph.quoteVoyage(offer, d, ui.vesselSel));
+  const sel = qs.find((q) => q.dest === ui.destSel) || qs[0];
+  ui.destSel = sel.dest;
+  const rows = qs.map((q) => `<tr class="pick${q.late ? ' late' : ''}" data-act="dest" data-d="${q.dest}" aria-selected="${q.dest === sel.dest}">
+      <td>${DESTS[q.dest].name}</td><td class="r num">${q.days}d</td><td class="r num">${fmtDiff(q.desBid)}</td><td class="r num">${q.freightBbl.toFixed(2)}</td>
+      <td class="r num ${q.margin >= 0 ? 'up' : 'down'}">${fmtDiff(q.margin)}</td><td class="r num ${q.total >= 0 ? 'up' : 'down'}">${money(q.total)}</td></tr>`).join('');
+  const lots = Math.round(offer.bbl / LOT);
+  let hint = '';
+  if (ui.mode === 'practice') {
+    const tips = [];
+    if (sel.margin < 0) tips.push(`This arb is <b>closed</b>: after freight you lose ${Math.round(-sel.margin * 100)}¢/bbl.`);
+    else tips.push(`Arb open by ${Math.round(sel.margin * 100)}¢/bbl ≈ ${money(sel.total)}. Hedging costs about ${Math.round(g.world.hs[g.state.t] * 200)}¢ round trip.`);
+    if (VESSELS[ui.vesselSel].bbl > offer.bbl) tips.push(`Dead freight: you pay for a whole ${VESSELS[ui.vesselSel].name} but only fill ${Math.round((offer.bbl / VESSELS[ui.vesselSel].bbl) * 100)}% of it.`);
+    if (!ui.hedgeCargo) tips.push(`Unhedged, this cargo is <b>${lots} lots</b> of flat-price risk against a ±${g.world.scenario.limit} lot limit.`);
+    if (sel.late) tips.push('It arrives after the close, so it will be sold afloat at a discount.');
+    hint = `<div class="hint">${tips.join(' ')}</div>`;
+  }
+  el.innerHTML = `<h3>Plan voyage · ${offer.grade} ${mbbl(offer.bbl)} FOB ${ORIGINS[offer.origin].name}</h3>
+    <div class="ship-seg">${ships.map((c) => `<button data-act="ship" data-c="${c}" aria-pressed="${c === ui.vesselSel}">${VESSELS[c].name} <span class="num" style="color:var(--faint)">$${(ph.rate(c) / 1000).toFixed(1)}k/d</span></button>`).join('')}</div>
+    <div class="table-scroll"><table class="dense"><thead><tr><th>Deliver to</th><th class="r">Sail</th><th class="r">DES</th><th class="r">Freight</th><th class="r">Arb/bbl</th><th class="r">Arb total</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <label class="check"><input type="checkbox" id="hedgeCargo" ${ui.hedgeCargo ? 'checked' : ''}> Sell ${lots} lots of Brent futures to hedge the flat price</label>
+    ${hint}
+    <button class="btn primary" data-act="buy">Buy cargo &amp; fix ${VESSELS[ui.vesselSel].name} to ${DESTS[sel.dest].name}</button>`;
+}
+
+function renderFreight() {
+  const g = ui.game;
+  const ph = g.physical;
+  const P = g.world.physical;
+  const s = g.state;
+  const back = Math.max(0, s.t - 5 * P.tpd);
+  $('ffaTable').innerHTML = `<thead><tr><th>Ship</th><th class="r">Spot $/day</th><th class="r">5d</th><th class="r">Pos</th><th class="r">FFA P&amp;L</th><th class="r">FFA</th></tr></thead><tbody>${
+    P.classes.map((c) => {
+      const r = ph.rate(c);
+      const chg = r - P.rate[c][back];
+      const f = s.ffa[c];
+      const pnl = f.cash + f.lots * PHYS.ffaDays * r;
+      return `<tr><td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(${CLASS_COLOR[c]});margin-right:6px"></span>${VESSELS[c].name}</td>
+        <td class="r num">${r.toLocaleString('en-US')}</td><td class="r num ${chg >= 0 ? 'up' : 'down'}">${chg >= 0 ? '+' : '−'}${Math.abs(chg).toLocaleString('en-US')}</td>
+        <td class="r num">${f.lots > 0 ? '+' : ''}${f.lots}</td><td class="r num ${pnl >= 0 ? 'up' : 'down'}">${f.lots || f.cash ? money(pnl) : '—'}</td>
+        <td><div class="ffa-btns"><button class="btn sell" data-act="ffa" data-c="${c}" data-lots="-1" title="Sell 1 lot at ${(r - PHYS.ffaHalfSpread).toLocaleString('en-US')}">Sell</button><button class="btn buy" data-act="ffa" data-c="${c}" data-lots="1" title="Buy 1 lot at ${(r + PHYS.ffaHalfSpread).toLocaleString('en-US')}">Buy</button></div></td></tr>`;
+    }).join('')
+  }</tbody>`;
+  drawFreightChart();
+}
+
+function drawFreightChart() {
+  const g = ui.game;
+  const P = g.world.physical;
+  const { ctx, w, h } = setupCanvas($('freightChart'));
+  const t = g.state.t;
+  const N = g.world.N;
+  const vals = P.classes.flatMap((c) => Array.from(P.rate[c].slice(0, t + 1)));
+  let lo = Math.min(...vals), hi = Math.max(...vals);
+  const pad0 = Math.max(2000, (hi - lo) * 0.1);
+  lo -= pad0; hi += pad0;
+  const pad = { l: 4, r: 44, t: 6, b: 6 };
+  const x = (i) => pad.l + (i / N) * (w - pad.l - pad.r);
+  const y = (v) => pad.t + (1 - (v - lo) / (hi - lo)) * (h - pad.t - pad.b);
+  ctx.font = `11px ${css('--mono')}`;
+  ctx.strokeStyle = css('--line');
+  ctx.fillStyle = css('--faint');
+  const step = niceStep((hi - lo) / 3);
+  for (let v = Math.ceil(lo / step) * step; v <= hi; v += step) {
+    const yy = Math.round(y(v)) + 0.5;
+    ctx.beginPath(); ctx.moveTo(pad.l, yy); ctx.lineTo(w - pad.r, yy); ctx.stroke();
+    ctx.fillText(`${Math.round(v / 1000)}k`, w - pad.r + 6, yy + 4);
+  }
+  for (const c of P.classes) {
+    ctx.beginPath();
+    for (let i = 0; i <= t; i++) (i ? ctx.lineTo(x(i), y(P.rate[c][i])) : ctx.moveTo(x(i), y(P.rate[c][i])));
+    ctx.strokeStyle = css(CLASS_COLOR[c]);
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
+}
+
+function onPhysAction(e) {
+  const el = e.target.closest('[data-act]');
+  if (!el || !ui.game?.physical || !ui.started || ui.paused) return;
+  const g = ui.game;
+  const act = el.dataset.act;
+  if (act === 'offer') selectOffer(+el.dataset.id);
+  else if (act === 'dest') ui.destSel = el.dataset.d;
+  else if (act === 'ship') ui.vesselSel = el.dataset.c;
+  else if (act === 'buy') {
+    const res = g.physical.buyCargo(ui.offerSel, ui.destSel, ui.vesselSel, { hedge: ui.hedgeCargo });
+    if (!res.ok) toast(res.reason, 'bad');
+    else {
+      toast(`Bought <b>${res.cargo.grade}</b> ${mbbl(res.cargo.bbl)}, fixed a ${VESSELS[res.cargo.cls].name} to ${DESTS[res.cargo.dest].name}. Freight ${money(res.quote.freight)}${res.cargo.hedgeLots ? `, hedged ${-res.cargo.hedgeLots} lots` : ''}.`, 'good');
+      ui.offerSel = null;
+    }
+  } else if (act === 'sell') {
+    const res = g.physical.sellCargo(+el.dataset.id);
+    if (!res.ok) toast(res.reason, 'bad');
+    else toast(`Sold <b>${res.cargo.grade}</b> DES ${DESTS[res.cargo.dest].name} at ${fmtDiff(res.cargo.desDiff)}: ${money(res.cargo.pnl)} on the arb.`, res.cargo.pnl >= 0 ? 'good' : 'bad');
+  } else if (act === 'ffa') {
+    const res = g.physical.tradeFFA(el.dataset.c, +el.dataset.lots);
+    if (!res.ok && res.reason) toast(res.reason, 'bad');
+  } else return;
+  renderAll();
 }
 
 // ---------- Charts ----------
@@ -421,7 +643,7 @@ function drawLiveChart() {
   mids.forEach((m, i) => (i ? ctx.lineTo(x(i), y(m)) : ctx.moveTo(x(i), y(m))));
   ctx.strokeStyle = css('--crude'); ctx.lineWidth = 1.6; ctx.stroke();
   // trades
-  for (const tr of g.state.trades) drawTradeMark(ctx, x(tr.t), y(tr.price), tr);
+  for (const tr of g.state.trades) if (CHART_KINDS.has(tr.kind)) drawTradeMark(ctx, x(tr.t), y(tr.kind === 'physical' ? tr.mid : tr.price), tr);
   // endpoint
   ctx.beginPath(); ctx.arc(x(t), y(mids[t]), 3.5, 0, Math.PI * 2); ctx.fillStyle = css('--text'); ctx.fill();
 }
@@ -429,6 +651,11 @@ function drawLiveChart() {
 function drawTradeMark(ctx, px, py, tr) {
   const up = tr.qty > 0;
   const s = tr.kind === 'client' ? 6 : 4;
+  if (tr.kind === 'physical') {
+    ctx.fillStyle = up ? css('--bid') : css('--offer');
+    ctx.fillRect(px - 5, py - 5, 10, 10);
+    return;
+  }
   ctx.beginPath();
   if (up) { ctx.moveTo(px, py - s); ctx.lineTo(px - s, py + s * 0.7); ctx.lineTo(px + s, py + s * 0.7); }
   else { ctx.moveTo(px, py + s); ctx.lineTo(px - s, py - s * 0.7); ctx.lineTo(px + s, py - s * 0.7); }
@@ -470,7 +697,7 @@ function drawDebriefChart() {
     ctx.fillStyle = hd.tag === 'RUMOUR' ? css('--warn') : css('--crude');
     ctx.fillRect(x(hd.tick) - 1, h - pad.b + 4, 2, 8);
   }
-  for (const tr of g.state.trades) drawTradeMark(ctx, x(tr.t), y(tr.price), tr);
+  for (const tr of g.state.trades) if (CHART_KINDS.has(tr.kind)) drawTradeMark(ctx, x(tr.t), y(tr.kind === 'physical' ? tr.mid : tr.price), tr);
 }
 
 // ---------- Debrief ----------
@@ -503,8 +730,13 @@ function showDebrief() {
 
   const attr = [
     ['Client spread', 'What you earned vs mid by pricing clients', a.clientEdge],
-    ['Hedging cost', 'Spread you paid crossing the screen', a.hedgeEdge],
-    ['Market moves', 'Your position × how price moved (news trading, inventory luck)', a.market],
+    ['Hedging cost', g.physical ? 'Spread you paid crossing the screen, including cargo hedges' : 'Spread you paid crossing the screen', a.hedgeEdge],
+    ...(g.physical ? [
+      ['Physical margin', 'Sold DES minus bought FOB, in differentials vs Brent', a.physEdge],
+      ['Freight & demurrage', `Charters you fixed${a.demurrage ? `, including ${money(-a.demurrage)} demurrage` : ''}`, a.freightCost],
+      ['Freight derivatives', 'FFA trading on charter rates', a.ffaPnl],
+    ] : []),
+    ['Market moves', g.physical ? 'Unhedged flat-price exposure × how Brent moved' : 'Your position × how price moved (news trading, inventory luck)', a.market],
     ['Penalties', `${g.state.missed} missed · ${g.state.passed} passed · ${g.state.breachTicks} ticks over limit · ${g.state.forced} risk cuts`, -a.penalties],
   ];
   $('dAttr').innerHTML = attr.map(([k, d, v]) => `<div class="attr-row"><div>${k}<small>${d}</small></div><span class="num ${v >= 0 ? 'up' : 'down'}">${money(v)}</span></div>`).join('')
@@ -516,6 +748,14 @@ function showDebrief() {
   $('dFlow').innerHTML = `<thead><tr><th>Client type</th><th class="r">Asked</th><th class="r">Quoted</th><th class="r">Filled</th><th class="r">Avg width</th><th class="r">Edge</th><th class="r">Markout</th></tr></thead><tbody>${
     Object.values(a.byType).map((b) => `<tr><td>${names[b.type]}</td><td class="r num">${b.requests}</td><td class="r num">${b.quotes}</td><td class="r num">${b.fills}</td><td class="r num">${b.quotes ? Math.round((b.widthSum / b.quotes) * 100) + '¢' : '—'}</td><td class="r num ${b.edge >= 0 ? 'up' : 'down'}">${money(b.edge)}</td><td class="r num ${b.markout >= 0 ? 'up' : 'down'}">${money(b.markout)}</td></tr>`).join('')
   }</tbody>`;
+  $('dCargoPane').hidden = !a.phys;
+  if (a.phys) {
+    const how = { sold: 'Sold on arrival', distressed: 'Distressed sale', end: 'Sold at close', afloat: 'Sold afloat' };
+    $('dCargo').innerHTML = `<thead><tr><th>Cargo</th><th>Route</th><th>Ship</th><th>Bought</th><th class="r">FOB</th><th class="r">DES</th><th class="r">Freight</th><th class="r">Demurrage</th><th>Outcome</th><th class="r">P&amp;L</th></tr></thead><tbody>${
+      a.phys.cargoes.map((c) => `<tr><td>${c.grade} ${(c.bbl / 1e6).toFixed(1)}M</td><td>${ORIGINS[c.origin].name} → ${DESTS[c.dest].name}</td><td>${VESSELS[c.cls].name}${VESSELS[c.cls].bbl > c.bbl ? ' <span class="chip no">oversized</span>' : ''}</td><td class="num">${clk(c.buyTick)}</td><td class="r num">${fmtDiff(c.fobDiff)}</td><td class="r num">${c.desDiff != null ? fmtDiff(c.desDiff) : '—'}</td><td class="r num">${c.freightBbl.toFixed(2)}</td><td class="r num">${c.demurrage ? money(c.demurrage) : '—'}</td><td>${how[c.how] || '—'}</td><td class="r num ${c.pnl >= 0 ? 'up' : 'down'}">${c.pnl != null ? money(c.pnl) : '—'}</td></tr>`).join('')
+      || '<tr><td colspan="10" style="color:var(--faint)">No cargoes traded.</td></tr>'
+    }</tbody>`;
+  }
   requestAnimationFrame(drawDebriefChart);
 }
 
@@ -568,6 +808,11 @@ function bindLobby() {
 }
 
 function bindDesk() {
+  $('cargoPane').addEventListener('click', onPhysAction);
+  $('freightPane').addEventListener('click', onPhysAction);
+  $('cargoPane').addEventListener('change', (e) => {
+    if (e.target.id === 'hedgeCargo') { ui.hedgeCargo = e.target.checked; renderAll(); }
+  });
   $('buyBtn').addEventListener('click', () => hedge(1));
   $('sellBtn').addEventListener('click', () => hedge(-1));
   $('flatBtn').addEventListener('click', flatten);
@@ -582,12 +827,11 @@ function bindDesk() {
     if (!ui.game) return;
     clearInterval(ui.timer);
     ui.paused = true;
-    overlay(`<h2>End the day early?</h2><p>Your book is marked at the current mid and scored as it stands. Remaining clients count as missed.</p><div style="display:flex;gap:8px"><button class="btn primary" id="goBtn">Keep trading</button><button class="btn" id="endBtn">End day</button></div>`);
+    overlay(`<h2>End the day early?</h2><p>Your book is marked at current prices and scored as it stands. Cargoes still at sea are sold afloat at a discount, and remaining clients count as missed.</p><div style="display:flex;gap:8px"><button class="btn primary" id="goBtn">Keep trading</button><button class="btn" id="endBtn">End day</button></div>`);
     $('goBtn').addEventListener('click', () => (ui.started ? resume() : hideOverlay()));
     $('endBtn').addEventListener('click', () => {
       hideOverlay();
-      const g = ui.game;
-      while (!g.state.done) g.step();
+      ui.game.finish();
       showDebrief();
     });
   });
@@ -597,6 +841,7 @@ function bindDesk() {
   $('saveBtn').addEventListener('click', saveScore);
   window.addEventListener('resize', () => {
     if (!$('desk').hidden && ui.game) drawLiveChart();
+    if (!$('desk').hidden && ui.game?.physical) drawFreightChart();
     if (!$('debrief').hidden && ui.game) drawDebriefChart();
   });
 }

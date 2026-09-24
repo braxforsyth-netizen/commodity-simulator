@@ -3,6 +3,8 @@
 // is pre-generated from a seed, so every player and every benchmark bot faces
 // exactly the same market. Player actions only change their own fills.
 
+import { buildPhysical, physicalDesk, botPhysical, analysePhysical } from './physical.js';
+
 export const LOT = 1000; // barrels per lot
 export const REQUEST_LIFE = 7; // ticks a client waits for a price
 export const MARKOUT = 10; // ticks used to judge whether a fill was "toxic"
@@ -193,6 +195,67 @@ export const SCENARIOS = [
       { type: 'news', at: 250, text: 'Treasury secretary: "system is sound", markets stabilise', impact: 1.0, tag: 'MACRO' },
     ],
   },
+  {
+    id: 'atlantic',
+    name: 'Atlantic Arb',
+    tag: 'Physical + freight',
+    difficulty: 3,
+    brief:
+      'You run a physical crude book alongside the futures desk. Buy cargoes FOB, charter a tanker, ship them to wherever they are worth most, and sell them delivered. Hedge the flat price with futures. Watch freight: it can close an arb overnight.',
+    start: 81.2,
+    vol: 0.03,
+    k: 0.25,
+    ticks: 320,
+    ticksPerDay: 4,
+    limit: 300,
+    maxLoss: 1500000,
+    halfSpread: 0.02,
+    reqRate: 0.05,
+    mix: { corporate: 0.7, trader: 0.15, fund: 0.15 },
+    fundInformed: 0.7,
+    newsRate: 0.012,
+    script: [
+      { type: 'data', announceAt: 20, at: 90, name: 'EIA weekly crude inventories', expected: -1.0, spread: 3.5, sens: 0.3 },
+    ],
+    physical: { origins: ['usgc', 'nsea'], dests: ['rdam', 'ningbo', 'sikka'], offerRate: 0.09, minGap: 6, newsRate: 0.022 },
+  },
+  {
+    id: 'redsea',
+    name: 'Red Sea Squeeze',
+    tag: 'Freight shock',
+    difficulty: 5,
+    brief:
+      'Attacks on shipping near Bab el-Mandeb. Charter rates are whipsawing, Suez routes are in question, and every arb depends on freight. Trade FFAs on the headlines, pick routes that still work, and hedge every barrel.',
+    start: 83.6,
+    vol: 0.035,
+    k: 0.25,
+    ticks: 320,
+    ticksPerDay: 4,
+    limit: 300,
+    maxLoss: 2000000,
+    halfSpread: 0.025,
+    reqRate: 0.05,
+    mix: { corporate: 0.55, trader: 0.2, fund: 0.25 },
+    fundInformed: 0.8,
+    newsRate: 0.012,
+    script: [
+      { type: 'news', at: 30, text: 'Tanker struck by missile in Bab el-Mandeb; Brent jumps on supply fears', impact: 1.1, tag: 'BREAKING' },
+    ],
+    physical: {
+      origins: ['usgc', 'nsea', 'meg'],
+      dests: ['rdam', 'ningbo', 'sikka'],
+      offerRate: 0.1,
+      minGap: 5,
+      newsRate: 0.012,
+      script: [
+        { at: 31, tag: 'FREIGHT', text: 'Owners suspend Red Sea transits after missile strike; war-risk premiums soar', rate: { aframax: 6000, suezmax: 9000, vlcc: 5000 }, des: { rdam: 0.3 } },
+        { at: 95, tag: 'RUMOUR', text: 'Unconfirmed: naval escort deal to reopen Red Sea lanes within days', rate: { aframax: -2500, suezmax: -4000, vlcc: -2000 } },
+        { at: 125, tag: 'DENIAL', text: 'Navies deny escort agreement; insurers raise war-risk cover again', rate: { aframax: 3500, suezmax: 5500, vlcc: 2500 } },
+        { at: 210, tag: 'FREIGHT', text: 'Chinese buying spree: 30 VLCCs fixed out of the Gulf this week', rate: { vlcc: 12000 }, des: { ningbo: 0.3 } },
+        { at: 270, tag: 'FREIGHT', text: 'Ceasefire holds; first tankers resume Suez transits', rate: { aframax: -5000, suezmax: -8000, vlcc: -4000 }, des: { rdam: -0.25 } },
+      ],
+    },
+  },
 ];
 
 export function scenarioById(id) {
@@ -242,7 +305,7 @@ export function buildWorld(scenarioId, seed) {
       const unit = ev.unit || 'M bbl';
       const impact = (actual - ev.expected) * (ev.unit ? ev.sens : -ev.sens);
       calendar.push({ tick: ev.at, name: ev.name, expected: ev.expected, unit });
-      headlines.push({ tick: ev.announceAt, text: `Scheduled: ${ev.name} due at ${clock(ev.at, N)} — consensus ${fmtSigned(ev.expected)}${unit === '%' ? '%' : ' M bbl'}`, tag: 'CALENDAR', impact: 0 });
+      headlines.push({ tick: ev.announceAt, text: `Scheduled: ${ev.name} due at ${clock(ev.at, N, sc)} — consensus ${fmtSigned(ev.expected)}${unit === '%' ? '%' : ' M bbl'}`, tag: 'CALENDAR', impact: 0 });
       headlines.push({
         tick: ev.at,
         text: `${ev.name}: ${fmtSigned(actual)}${unit === '%' ? '%' : ' M bbl'} vs ${fmtSigned(ev.expected)}${unit === '%' ? '%' : ' M bbl'} expected`,
@@ -265,6 +328,7 @@ export function buildWorld(scenarioId, seed) {
     headlines.push({ tick: t, text: item.text, tag: 'NEWS', impact });
     addShock(t, impact);
   }
+  const physical = sc.physical ? buildPhysical(makeRng(`${sc.id}:${seed}:physical`), sc, N, headlines) : null;
   headlines.sort((a, b) => a.tick - b.tick);
   headlines.forEach((h, i) => (h.id = i));
 
@@ -317,11 +381,16 @@ export function buildWorld(scenarioId, seed) {
     });
   }
 
-  return { scenario: sc, seed: String(seed), N, mid, fair, hs, headlines, requests, calendar };
+  return { scenario: sc, seed: String(seed), N, mid, fair, hs, headlines, requests, calendar, physical };
 }
 
 // ---------- Helpers ----------
-export function clock(t, N) {
+export function clock(t, N, sc) {
+  if (sc?.ticksPerDay) {
+    const day = Math.floor(t / sc.ticksPerDay) + 1;
+    const hour = (t % sc.ticksPerDay) * (24 / sc.ticksPerDay);
+    return `Day ${day} ${String(hour).padStart(2, '0')}:00`;
+  }
   const minutes = 8 * 60 + Math.round((t / N) * 9 * 60);
   const h = Math.floor(minutes / 60);
   const m = minutes % 60;
@@ -359,7 +428,8 @@ export function createGame(world) {
   };
 
   const midAt = (t) => world.mid[Math.min(t, world.mid.length - 1)];
-  const mtm = () => s.cash + s.pos * midAt(s.t);
+  let physical = null;
+  const mtm = () => s.cash + s.pos * midAt(s.t) + (physical ? physical.ffaValue() + physical.cargoMark() : 0);
   const score = () => mtm() - s.penalties;
   const limitBbl = sc.limit * LOT;
 
@@ -369,6 +439,7 @@ export function createGame(world) {
     s.cash -= qty * price;
     s.pos += qty;
     if (kind === 'client') s.clientEdge += edge;
+    else if (kind === 'physical') s.physEdge += edge;
     else s.hedgeEdge += edge;
     const tr = { t: s.t, qty, price, mid: m, kind, edge, ...extra };
     s.trades.push(tr);
@@ -434,7 +505,7 @@ export function createGame(world) {
     const sc_ = score();
     s.peak = Math.max(s.peak, sc_);
     s.maxDrawdown = Math.max(s.maxDrawdown, s.peak - sc_);
-    s.history.push({ t: s.t, mid: midAt(s.t), pos: s.pos, pnl: mtm(), score: sc_ });
+    s.history.push({ t: s.t, mid: midAt(s.t), pos: s.pos, phys: s.phys || 0, pnl: mtm(), score: sc_ });
   }
 
   // Advance the clock one tick. Returns what happened for the UI.
@@ -468,6 +539,7 @@ export function createGame(world) {
     }
     record();
     if (score() < -sc.maxLoss) {
+      if (physical) physical.close();
       s.done = true;
       s.stoppedOut = true;
       ev.push({ type: 'stopout' });
@@ -476,8 +548,10 @@ export function createGame(world) {
     s.t++;
     for (const h of world.headlines) if (h.tick === s.t) ev.push({ type: 'headline', h });
     for (const q of world.requests) if (q.tick === s.t) ev.push({ type: 'request', req: q });
+    if (physical) physical.onTick(ev);
     if (s.t >= world.N) {
-      // close out at mid: the book is marked, not dumped
+      // futures are marked at mid; cargoes still on the water are sold where they are
+      if (physical) physical.close();
       record();
       s.done = true;
       ev.push({ type: 'end' });
@@ -485,9 +559,26 @@ export function createGame(world) {
     return ev;
   }
 
+  // End the session now: unanswered clients count as missed, the book is marked where it stands.
+  function finish() {
+    if (s.done) return;
+    for (const q of world.requests) {
+      if (s.rfq.has(q.id)) continue;
+      s.missed++;
+      s.penalties += PENALTY.missed;
+      s.rfq.set(q.id, { req: q, status: 'missed', t: s.t });
+    }
+    if (physical) physical.close();
+    record();
+    s.done = true;
+  }
+
+  if (world.physical) physical = physicalDesk({ world, s, book, hedge, midAt });
+
   return {
     world,
     state: s,
+    physical,
     mid: () => midAt(s.t),
     bid: () => round2(midAt(s.t) - world.hs[Math.min(s.t, world.hs.length - 1)]),
     ask: () => round2(midAt(s.t) + world.hs[Math.min(s.t, world.hs.length - 1)]),
@@ -500,6 +591,7 @@ export function createGame(world) {
     hedge,
     flatten,
     step,
+    finish,
     visibleHeadlines: () => world.headlines.filter((h) => h.tick <= s.t),
   };
 }
@@ -515,6 +607,7 @@ const BOTS = [
     hedgeAt: 0.15,
     hedgeTo: 0,
     news: null,
+    physical: { minMargin: 0.35 },
   },
   {
     id: 'senior',
@@ -524,6 +617,7 @@ const BOTS = [
     hedgeAt: 0.2,
     hedgeTo: 0.05,
     news: { lag: 3, minImpact: 0.7, lots: 0.3, hold: 12, trustRumours: false },
+    physical: { minMargin: 0.15 },
   },
   {
     id: 'head',
@@ -533,6 +627,7 @@ const BOTS = [
     hedgeAt: 0.25,
     hedgeTo: 0.05,
     news: { lag: 1, minImpact: 0.5, lots: 0.5, hold: 10, trustRumours: false },
+    physical: { minMargin: 0.05, ffa: { lag: 1, lots: 3, hold: 12, min: 3000 } },
   },
 ];
 
@@ -543,8 +638,10 @@ export function runBot(world, botId) {
   const L = world.scenario.limit;
   const exits = [];
   let newsLots = 0; // directional news position, kept apart from client inventory
+  // client inventory only: excludes news trades, cargoes and the futures hedging them
+  const inventory = () => (s.pos - (s.phys || 0) - (s.cargoHedge || 0)) / LOT - newsLots;
   while (!s.done) {
-    const posLots = (s.pos / LOT) - newsLots;
+    const posLots = inventory();
     for (const q of g.openRequests()) {
       if (q.tick + 1 > s.t) continue; // bots take a tick to respond
       const w = bot.width[q.type];
@@ -562,9 +659,24 @@ export function runBot(world, botId) {
         newsLots += lots;
         exits.push({ at: s.t + bot.news.hold, lots: -lots });
       }
-      for (const e of exits) if (e.at === s.t) { g.hedge(e.lots); newsLots += e.lots; }
+      for (const e of exits) if (!e.ffa && e.at === s.t) { g.hedge(e.lots); newsLots += e.lots; }
     }
-    const p = s.pos / LOT - newsLots;
+    if (g.physical) {
+      botPhysical(g, bot.physical);
+      const ffa = bot.physical.ffa;
+      if (ffa) {
+        for (const h of world.headlines) {
+          if (h.tick + ffa.lag !== s.t || !h.phys?.rate || h.tag === 'RUMOUR') continue;
+          for (const [cls, x] of Object.entries(h.phys.rate)) {
+            if (Math.abs(x) < ffa.min || !s.ffa[cls]) continue;
+            const lots = Math.sign(x) * ffa.lots;
+            if (g.physical.tradeFFA(cls, lots).ok) exits.push({ at: s.t + ffa.hold, ffa: cls, lots: -lots });
+          }
+        }
+        for (const e of exits) if (e.ffa && e.at === s.t) g.physical.tradeFFA(e.ffa, e.lots);
+      }
+    }
+    const p = inventory();
     if (Math.abs(p) > L * bot.hedgeAt) g.hedge(Math.round(-p + Math.sign(p) * L * bot.hedgeTo));
     g.step();
   }
@@ -581,7 +693,11 @@ export function analyse(game) {
   const N = world.N;
   const midAt = (t) => world.mid[Math.min(t, world.mid.length - 1)];
   const final = game.mtm();
-  const market = final - s.clientEdge - s.hedgeEdge;
+  const phys = world.physical ? analysePhysical(game) : null;
+  const physEdge = (s.physEdge || 0) + (game.physical ? game.physical.cargoMark() : 0);
+  const freightCost = s.freightCost || 0;
+  const ffaPnl = phys ? phys.ffaPnl : 0;
+  const market = final - s.clientEdge - s.hedgeEdge - physEdge - freightCost - ffaPnl;
 
   const byType = {};
   for (const type of ['corporate', 'trader', 'fund']) byType[type] = { type, requests: 0, fills: 0, edge: 0, markout: 0, lots: 0, widthSum: 0, quotes: 0 };
@@ -602,7 +718,7 @@ export function analyse(game) {
   const reactions = [];
   for (const h of world.headlines) {
     if (h.tick > s.t || Math.abs(h.impact) < 0.7 || h.tag === 'RUMOUR') continue;
-    const window = s.trades.filter((tr) => tr.kind === 'hedge' && !tr.forced && tr.t >= h.tick && tr.t <= h.tick + 6);
+    const window = s.trades.filter((tr) => tr.kind === 'hedge' && !tr.forced && !tr.cargo && tr.t >= h.tick && tr.t <= h.tick + 6);
     const net = window.reduce((a, tr) => a + tr.qty, 0) / LOT;
     const first = window.find((tr) => Math.sign(tr.qty) === Math.sign(h.impact));
     const posBefore = posAt(s, h.tick - 1) / LOT;
@@ -642,8 +758,9 @@ export function analyse(game) {
   if (s.missed > 0) coach.push({ sev: 'bad', text: `${s.missed} client request${s.missed > 1 ? 's' : ''} timed out (−${money(s.missed * PENALTY.missed)}). Always show a price, even a wide one. A wide quote costs nothing, a missed client costs franchise.` });
   if (s.breachTicks > 0 || s.forced > 0) coach.push({ sev: 'bad', text: `Risk limit breached for ${s.breachTicks} tick${s.breachTicks === 1 ? '' : 's'}${s.forced ? ` and the risk manager force-cut you ${s.forced}×` : ''}. Hedge as soon as a big client fill lands. Don't wait for a better price.` });
   if (heavyTicks > N * 0.2) coach.push({ sev: 'warn', text: `You ran over 80% of your limit for ${heavyTicks} ticks. Big positions turn every headline into a coin flip. Keep a buffer so you can absorb the next client trade.` });
-  const hedgeCostPerLot = s.trades.filter((t) => t.kind === 'hedge').reduce((a, t) => a + Math.abs(t.qty), 0) / LOT;
-  if (hedgeCostPerLot > 0 && -s.hedgeEdge > Math.max(s.clientEdge, 1) * 0.8) coach.push({ sev: 'warn', text: `Hedging costs (${money(s.hedgeEdge)}) ate most of your client spread (${money(s.clientEdge)}). You're over-trading the screen. Let small positions sit, and use skew to get clients to flatten you for free.` });
+  const screenHedges = s.trades.filter((t) => t.kind === 'hedge' && !t.cargo);
+  const screenCost = screenHedges.reduce((a, t) => a + t.edge, 0);
+  if (screenHedges.length && -screenCost > Math.max(s.clientEdge, 1) * 0.8) coach.push({ sev: 'warn', text: `Hedging costs (${money(screenCost)}) ate most of your client spread (${money(s.clientEdge)}). You're over-trading the screen. Let small positions sit, and use skew to get clients to flatten you for free.` });
   const missedNews = reactions.filter((r) => !r.right);
   if (reactions.length) {
     const good = reactions.length - missedNews.length;
@@ -652,6 +769,7 @@ export function analyse(game) {
   const badChase = rumourChases.filter((r) => !r.truth);
   if (badChase.length) coach.push({ sev: 'bad', text: `You chased ${badChase.length} rumour${badChase.length > 1 ? 's' : ''} that were later denied. Rumours move price, but only partly. Trade them small, or wait for confirmation.` });
   if (s.stoppedOut) coach.push({ sev: 'bad', text: `Stopped out: you hit the desk's loss limit of ${money(world.scenario.maxLoss)}. Survival first: the best traders size down when they're wrong.` });
+  if (phys) coach.push(...phys.coach);
   if (!coach.length) coach.push({ sev: 'good', text: 'Clean session. Now try a harder scenario or Ranked mode.' });
 
   return {
@@ -670,6 +788,11 @@ export function analyse(game) {
     answered,
     totalReq,
     coach,
+    physEdge,
+    freightCost,
+    ffaPnl,
+    demurrage: s.demurrage || 0,
+    phys,
   };
 }
 

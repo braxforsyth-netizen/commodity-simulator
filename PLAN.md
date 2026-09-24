@@ -52,7 +52,9 @@ you. Move to the Daily seed once you can beat the Senior Trader.
 | 3. Event trading | OPEC+ Week, Practice | Right side of ≥ 2/3 big headlines; no losing rumour chases |
 | 4. Pressure | Hurricane Season, Ranked | Grade A (beat the Senior Trader) |
 | 5. Survival | Macro Storm, Ranked | Positive score with max drawdown < 50% of stop-loss |
-| 6. Competition | Any, Ranked, Daily seed | Grade S. Beat the Head of Desk |
+| 6. Physical arb | Atlantic Arb, Practice | Every cargo hedged and profitable after freight; zero demurrage |
+| 7. Freight | Red Sea Squeeze, Ranked | Grade A, with positive FFA P&L |
+| 8. Competition | Any, Ranked, Daily seed | Grade S. Beat the Head of Desk |
 
 **Habits to build (these are what the Head of Desk bot does):**
 
@@ -62,19 +64,30 @@ you. Move to the Daily seed once you can beat the Senior Trader.
 4. Hedge on screen only when you're past ~25–30% of your limit. Don't hedge back to exactly flat.
 5. On a big confirmed headline, trade in the first 1–3 ticks, about half your limit, and take it off within ~10 ticks.
 6. Treat rumours as half-size at most. Wait for the confirmation or denial.
+7. Physical: only buy a cargo if DES − FOB − freight clears ~5¢/bbl for the
+   best destination, on the ship that fits the cargo. Hedge every barrel, and
+   sell the moment it arrives.
+8. Freight: trade FFAs in the direction of freight headlines within a tick or
+   two, and take the trade off within ~3 days.
 
 ## Roadmap
 
-**v1 (this repo).** Front-month Brent, RFQs, news, limits, bots, debrief,
+**v1.** Front-month Brent, RFQs, news, limits, bots, debrief,
 local leaderboard, seeded replays.
+
+**v1.1 (this repo): physical and freight.** Cargo offers from three load
+ports, Aframax/Suezmax/VLCC charters to three destinations, a voyage planner
+and arb board, cargo hedging against the shared position limit, demurrage and
+distressed sales, charter-rate headlines, and FFA trading.
 
 **v2: the forward curve.** Add M1–M6 contracts, calendar spreads,
 contango/backwardation, and a storage tank. Buy prompt, sell deferred, pay
 storage, and learn the cash-and-carry trade.
 
-**v3: physical and arbitrage.** Cargo tenders (Forties, WTI Midland), freight
-rates, the WTI–Brent arb window and quality differentials. This is the
-physical-trading side of an oil major's business.
+**v3: deeper physical.** Laycans and pricing windows (cargo priced on the
+average of Dated Brent around the bill of lading rather than a fixed price),
+selling cargoes afloat and rerouting mid-voyage, storage, quality blending,
+and receiver tenders you bid into.
 
 **v4: options and Greeks.** Client requests for caps and collars, a vol
 surface, delta-hedging, and vega risk into events like OPEC meetings.
@@ -88,7 +101,12 @@ set the price a client sees.
 - `src/engine.js` holds all market logic, with no DOM. `buildWorld(scenario, seed)`
   pre-generates the price path, headlines and client requests. Player actions
   never change the world, which is what makes replays and bot benchmarks fair.
+- `src/physical.js` holds cargoes, freight, the voyage planner maths, FFAs and
+  the bots' physical strategy. Its world data (diffs, charter rates, offers) is
+  also generated from the seed.
 - `src/app.js` is the browser UI (lobby, desk, debrief). Charts are drawn on canvas.
 - `index.html` holds the markup and styles. No build step, no dependencies.
+- `test/physical.test.js` covers cargo booking, freight, demurrage, FFA limits
+  and the attribution identity with physical in the book.
 - `test/engine.test.js` covers determinism, the P&L attribution identity, fills,
   penalties, limits and bots (`npm test`).
